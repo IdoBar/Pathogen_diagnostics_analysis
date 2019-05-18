@@ -80,7 +80,7 @@ datatable(as.data.frame(sample_table), caption=tbls("samples"), rownames = FALSE
 
 DNA-Seq data processing, and taxonomic classifications were performed on the _Griffith University Gowonda HPC Cluster_ (using Torque scheduler), following the methods specified by ....  
 
-Detailed methods, including code for running each of the analyses steps are provided in the associated [Pathogen_diagnostics_analysis GitHub repository](https://github.com/IdoBar/A_rabiei_WGS_analysis).
+Detailed methods, including code for running each of the analyses steps are provided in the associated [Pathogen_diagnostics_analysis GitHub repository](https://github.com/IdoBar/Pathogen_diagnostics_analysis).
 
 ### Computing Environment Praparation
 Install needed software in a `conda` environment on Gowonda2.
