@@ -27,8 +27,9 @@ csl: style/springer-basic-improved-author-date-with-italic-et-al-period.csl
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(list(echo = TRUE, eval=FALSE, message=FALSE))
 # options(width = 180)
-cran_packages <- c("tidyverse", "knitr", "pander", "captioner", "DT", "kableExtra")
+cran_packages <- c("tidyverse", "knitr", "pander", "captioner", "DT", "kableExtra", "paletteer")
 pacman::p_load(char=cran_packages, repos="https://cran.rstudio.com/")
+devtools::source_gist("7f63547158ecdbacf31b54a58af0d1cc", filename = "util.R")
 # Connect to Zotero to access references
 # biblio <- ReadBib("data/Fungal_genomes.bib") # , "bibtex", "RefManageR"
 # DataTable options
@@ -62,7 +63,7 @@ Develop highly specific, real-time chickpea fungal pathogens detection and analy
 
 # Aims
 1.	Establish and optimise the methods and protocols for reproducible extraction of high molecular weight DNA suitable for long-read whole-genome-sequencing from fungal cultures and inoculated plant samples
-2.	Develop target species' databases that will be used as references during sequencing (_Ascochyta rabiei_, _Botrytis cinerea_, _Botrytis fabae_ and potentially other closely related species)
+2.	Develop target species' databases that will be used as references during sequencing (_Ascochyta rabiei_, _Botrytis cinerea_ and potentially other closely related species)
 3.	Accurately identify pathogens from mixed samples from controlled experiments and actual infected chickpea from growing paddocks (down to isolate-level resolution) 
 
 # Experimental Design 
@@ -87,13 +88,11 @@ Install needed software in a `conda` environment on Gowonda2.
 ```{bash setup_tools}
 # install and setup conda environment (maybe a new one for using the GPU node) (need to fix internet connection to gowonda2 - use patched netcheck in ~/bin)
 ~/bin/netcheck
-conda install -c bioconda kraken2
+conda create -y -n kraken -c bioconda kraken2 bracken krona
 # Clean extra space
 conda clean -y --all
 # install deepbinner in a new conda environment
-conda create --name tf_gpu -c bioconda tensorflow-gpu deepbinner
-# install nanopore utils
-pip install ont-fast5-api
+conda create -y --name tf_gpu -c bioconda tensorflow-gpu deepbinner ont-fast5-api
 # Install pdfx to parse the report and download the files, see https://stackoverflow.com/a/33173484
 easy_install -U pdfx
 ```
@@ -103,6 +102,8 @@ Then download and setup pre-made reference databases for Kraken2 [@Wood_Kraken_2
 NCORES=12
 # define location for Kraken databases
 KRAKEN_DB=/project/aerc/ncbi/kraken_dbs/pathogen_diag_refs
+# activate kraken environment
+conda activate kraken
 # Create a new folder for the databases
 mkdir -p $KRAKEN_DB
 # download taxonomy db from NCBI
@@ -114,6 +115,7 @@ kraken2-build --download-library viral --db $KRAKEN_DB --threads $NCORES
 kraken2-build --download-library plant --db $KRAKEN_DB --threads $NCORES
 ```
 Download custom genomes and prepare as references, following the instructions in the [Kraken2 manual](https://ccb.jhu.edu/software/kraken2/index.shtml?t=manual#custom-databases):
+
 >Sequences not downloaded from NCBI may need their taxonomy information assigned explicitly. This can be done using the string kraken:taxid|XXX in the sequence ID, with XXX replaced by the desired taxon ID.
 
 ```{bash custom_refs}
@@ -148,19 +150,21 @@ pigz -cd GCF_000143535.2_ASM14353v4_genomic.fna.gz sed -E '/>/s/(>[^ ]+)/\1|krak
 # Add the files to Kraken database
 RUN=add_custom_refs
 NCORES=12
-parallel --dry-run "kraken2-build --add-to-library {$file} --db $KRAKEN_DB --threads $NCORES" ::: *.fna > ${RUN}.bash
+parallel --dry-run " kraken2-build --add-to-library {} --db $KRAKEN_DB --threads $NCORES" ::: *.fna > ${RUN}.bash
 # Prepare PBS script
 echo '#!/bin/bash -v
 #PBS -V
 #PBS -l' "select=1:ncpus=$NCORES:mem=16GB,walltime=10:30:00
 
 cd \$PBS_O_WORKDIR
+conda activate kraken
 gawk -v ARRAY_IND=\$PBS_ARRAY_INDEX 'NR==ARRAY_IND' \${CMDS_FILE} | bash" > ${RUN}.pbspro
 
 # Run the commands 
 JOBS_NUM=`wc -l ${RUN}.bash | gawk '{print $1}'`
 CUSTOM_REFS_ID=$( qsub -J1-$JOBS_NUM -N ${RUN:0:11} -vCMDS_FILE=${RUN}.bash  ${RUN}.pbspro ) 
 CUSTOM_REFS_ID=$( echo $CUSTOM_REFS_ID | egrep -o "[0-9]{7}"  )
+
 # find and remove empty files
 find . -size 0 -exec rm {} + 
 
@@ -169,21 +173,24 @@ find . -regextype posix-egrep -regex '\./.*\.e[0-9]{7}.*' | xargs grep "ExitStat
 
 #
 ```
-Build reference database library (took 2h:15m and requires >76Gb RAM)
+Build reference database library (took 2h:15m and requires >76Gb RAM with 16 cores)
 ```{bash kraken_build}
-NCORES=16
+NCORES=12
 # define location for Kraken databases
 KRAKEN_DB=/project/aerc/ncbi/kraken_dbs/pathogen_diag_refs
 # send the job
-echo "cd \$PBS_O_WORKDIR ; kraken2-build --build --db $KRAKEN_DB --threads $NCORES" | qsub -V -l select=1:ncpus=$NCORES:mem=96GB,walltime=5:00:00 -N kraken_build # 5313443.pbsserver
+echo "cd \$PBS_O_WORKDIR ; conda activate kraken; kraken2-build --build --db $KRAKEN_DB --threads $NCORES" | qsub -V -l select=1:ncpus=$NCORES:mem=96GB,walltime=5:00:00 -N kraken_build # 5313443.pbsserver
+# inspect the resulting database
+
+echo "cd \$PBS_O_WORKDIR ; conda activate kraken; kraken2-inspect --db $KRAKEN_DB --threads $NCORES" | qsub -V -l select=1:ncpus=$NCORES:mem=96GB,walltime=00:30:00 -N kraken_inspect # 5313862.pbsserver
 
 ```
 
 
 ### Nanopore Sequencing
 
-#### Basecall
-The raw reads (in `.fast5` format) produced by MinKnow where copied to the *Gowonda HPC cluster* (Griffith University) and the bases were called into `.fastq` files using Guppy v3.0.3+7e7b7d0, utilising a GPU-enabled node on the cluster. The process was substantially faster than based on CPUs and completed within 24 minutes.
+#### Basecalling
+The raw reads (in `.fast5` format) produced by MinKnow where copied to the *Gowonda HPC cluster* (Griffith University) and the bases were called into `.fastq` files using Guppy v3.0.3+7e7b7d0, utilising a GPU-enabled node on the cluster, equipped with a Tesla V100-PCIE-32GB GPU. The process was substantially faster than based on CPUs and completed within 24 minutes.
 ```{bash guppy_basecall}
 # log into the GPU node
 ssh n060
@@ -203,21 +210,19 @@ cp -r ~/lscratch/Nanopore_data/guppy_gpu_basecall ~/scratch/data/Nanopore_data/O
 exit
 ```
 #### Demultiplex Reads
-The resulting `.fastq` files of reads that passed QC were then combined and demultiplexed based on their barcodes to seperate files representing the reads from each DNA sample.
+The resulting `.fastq` files of reads that passed QC were then combined and demultiplexed based on their barcodes to seperate files representing the reads from each DNA library. The resources by guppy to perform the barcode classifications were a mere 15Mb RAM and 2 min when utilising 16 cores. 
 ```{bash demultiplexing}
 # demultiplex results
-NCORES=16
+NCORES=12
 cd ~/scratch/data/Nanopore_data/Oak_diagnostics/
 echo "cd \$PBS_O_WORKDIR ; ~/etc/tools/Nanopore/ont-guppy/bin/guppy_barcoder --barcode_kits SQK-RBK004 -q 0 -i ~/scratch/data/Nanopore_data/Oak_diagnostics/guppy_gpu_basecall -s ~/scratch/data/Nanopore_data/Oak_diagnostics/guppy_gpu_basecall/demultiplexed_fastq -t $NCORES" | qsub -V -l select=1:ncpus=$NCORES:mem=48GB,walltime=1:00:00 -N guppy_barcode # 5313461.pbsserver
 ```
-An alternative to demultiplexing with guppy is to use deepbinner [@Wick_Deepbinner_2018], which operates on the raw reads (this can be done in real-time while sequencing)
+An alternative to demultiplexing with guppy is to use deepbinner [@Wick_Deepbinner_2018], which applies a deep convolutional neural network on the raw signal (this can be done in real-time while sequencing) to classify the reads to their respective barcode. Running deepbinner after the MinIon run had ended required that the multi-read fast5 files were first split to single-read files. This was achieved using the `multi_to_single_fast5` utility from [ont_fast5_api repository](https://github.com/nanoporetech/ont_fast5_api), utilising 16 cores, 5.4Gb RAM and a runtime of 21 minutes. The single-read files were then analysed to assign the read to a barcode using the `deepbinner classify` command, followed by a second `deepbinner bin` command to separate the fastq reads according to the determined classification. The performance of deepbinner can be substantially enhanced using GPU processing and therfore it was run on the same GPU-enabled node mentioned earlier (runtime was 3h47min and 5min for both processes, respectively).      
 ```{bash deepbinner}
-### optional ###
 # demultiplex with Deepbinner
-pip install ont-fast5-api
 # Split the multi-read fast5 files to single-read
-NCORES=32
-echo "cd \$PBS_O_WORKDIR ; multi_to_single_fast5 --recursive -i ~/scratch/data/Nanopore_data/Oak_diagnostics/Oak_pathogen_detection/Pooled_inoculated_chickpea/20190514_0639_MN30244_FAK12021_555b1a0a -s ~/scratch/data/Nanopore_data/Oak_diagnostics/Oak_pathogen_detection/Pooled_inoculated_chickpea/single-read_fast5 -t $NCORES" | qsub -V -l select=1:ncpus=$NCORES:mem=96GB,walltime=5:00:00  # 5313469.pbsserv
+NCORES=12
+echo "cd \$PBS_O_WORKDIR ; conda activate tf_gpu; multi_to_single_fast5 --recursive -i ~/scratch/data/Nanopore_data/Oak_diagnostics/Oak_pathogen_detection/Pooled_inoculated_chickpea/20190514_0639_MN30244_FAK12021_555b1a0a -s ~/scratch/data/Nanopore_data/Oak_diagnostics/Oak_pathogen_detection/Pooled_inoculated_chickpea/single-read_fast5 -t $NCORES" | qsub -V -l select=1:ncpus=$NCORES:mem=96GB,walltime=5:00:00  # 5313469.pbsserv
 rsync -azr ~/scratch/data/Nanopore_data/Oak_diagnostics/Oak_pathogen_detection/Pooled_inoculated_chickpea/single-read_fast5 n060:~/lscratch/Nanopore_data/Oak_pathogen_diagnostics/
 # classifying fast5 reads
 DEEPBIN_ID=$( echo "cd ~/lscratch/Nanopore_data/Oak_pathogen_diagnostics/ ; source ~/.bashrc; conda activate tf_gpu; deepbinner classify --rapid ~/lscratch/Nanopore_data/Oak_pathogen_diagnostics/single-read_fast5 > classifications " | qsub -V -l select=1:ncpus=1:ngpus=1:mem=24GB,walltime=10:00:00 -W group_list=deeplearning -A deeplearning -q dljun@n060 -N deepbin_class ) # 664.n060
@@ -229,7 +234,7 @@ rsync -azr ~/scratch/data/Nanopore_data/Oak_diagnostics/guppy_gpu_basecall.fastq
 echo "cd ~/lscratch/Nanopore_data/Oak_pathogen_diagnostics/; source ~/.bashrc; conda activate tf_gpu; deepbinner bin --classes classifications --reads ~/lscratch/Nanopore_data/Oak_pathogen_diagnostics/guppy_gpu_basecall.fastq.gz --out_dir ~/lscratch/Nanopore_data/Oak_pathogen_diagnostics/binned_reads" | qsub -V -l select=1:ncpus=1:ngpus=1:mem=24GB,walltime=10:00:00 -W group_list=deeplearning -W depend=afterok:$DEEPBIN_ID -A deeplearning -q dljun@n060 -N deepbin_bin
 
 ```
-Deepbinner and guppy results are summarised in (`r tbls(name="barcoding",display="cite")`).
+
 ```{r barcoding, eval=TRUE}
 guppy_dedup <- read_tsv("./data/guppy_barcoding_summary.txt" ) # %>% 
   # count(barcode_arrangement) %>% rename(Barcode=barcode_arrangement, guppy_count=n) %>% 
@@ -237,33 +242,38 @@ guppy_dedup <- read_tsv("./data/guppy_barcoding_summary.txt" ) # %>%
   #        guppy_prop=guppy_count/sum(guppy_count)) %>% write_tsv("./data/guppy_barcoding_summary.txt")
 deepbinner_class <- read_tsv("./data/deepbinner_classification.txt") %>%
   mutate(deepbinner_prop=Count/sum(Count)) %>% rename(deepbinner_count=Count) 
-dedup_summary <- deepbinner_class %>% 
-  inner_join(guppy_dedup)
+dedup_summary <- deepbinner_class  %>% 
+  inner_join(guppy_dedup) %>% mutate(count_diff=deepbinner_count - guppy_count)
+mean_diff <- dedup_summary %>% filter(guppy_count>500, Barcode!="unclassified") %>% 
+   summarise(mean(count_diff)) 
+class_diff <- dedup_summary %>% filter(Barcode=="unclassified")
   
 ```
-Details of the sequenced samples is provided in (`r tbls(name="barcoding",display="cite")`).
+Overall, deepbinner was able to assign more reads into their barcodes than guppy (in average `r mean_diff` more reads), at the expense of some false positives (as can be seen for barcodes 06-12 in `r tbls(name="barcoding",display="cite")`) and substantially increased runtime and computing resources. (point for discussion - are the extra resources needed for diagnostics? probably not...)
 
 ```{r dedup_table, eval=TRUE} 
 datatable(dedup_summary, caption=tbls("barcoding"), rownames = FALSE) %>% 
   formatPercentage(c('deepbinner_prop', 'guppy_prop'), 2)# pander , justify="left"
 ```
 ### Assign Taxa
+Reads were assigned to their taxonomic origin using Kraken2 v2.0.8-beta, requiring 42-75Gb RAM and 1-13.5 min processing time using 12 cores for each separate barcode file, depending on the number of reads it contained. The assigned taxonomic classes were further investigated and compared between the samples using Pavian v0.1.3 [@Breitwieser_Pavian_2016].
 ```{bash kraken2}
 mkdir -p $HOME/scratch/data/Nanopore_data/Oak_diagnostics/kraken_taxonomy/fastq
 # symlink files into the folder
 RUN=kraken2_tax
-NCORES=16
+NCORES=12
 # define location for Kraken databases
 KRAKEN_DB=/project/aerc/ncbi/kraken_dbs/pathogen_diag_refs
 # create the kraken jobs (to read hash table from disk use `--memory-mapping`)
 cd $HOME/scratch/data/Nanopore_data/Oak_diagnostics/kraken_taxonomy
-ls -1 $HOME/scratch/data/Nanopore_data/Oak_diagnostics/kraken_taxonomy/fastq/*.fastq | parallel --dry-run "kraken2 --db $KRAKEN_DB --threads $NCORES --use-names --report {/.}_kraken2_report.txt {} > {/.}_kraken2_output.txt" > ${RUN}.bash
+ls -1 $HOME/scratch/data/Nanopore_data/Oak_diagnostics/kraken_taxonomy/fastq/*.fastq | parallel --dry-run "kraken2 --db $KRAKEN_DB --threads $NCORES --use-names --use-mpa-style --report  {/.}_kraken2_mpa_report.txt {} > {/.}_kraken2_mpa_output.txt" > ${RUN}.bash
 # Prepare PBS script
 echo '#!/bin/bash -v
 #PBS -V
-#PBS -l' "select=1:ncpus=$NCORES:mem=96GB,walltime=10:30:00
+#PBS -l' "select=1:ncpus=$NCORES:mem=72GB,walltime=10:30:00
 
 cd \$PBS_O_WORKDIR
+conda activate kraken
 gawk -v ARRAY_IND=\$PBS_ARRAY_INDEX 'NR==ARRAY_IND' \${CMDS_FILE} | bash" > ${RUN}.pbspro
 
 # Run the commands 
@@ -278,7 +288,47 @@ find . -regextype posix-egrep -regex '\./.*\.e[0-9]{7}.*' | xargs grep "ExitStat
 
 ```
 
+```{r summarise_taxa, eval=TRUE}
+barcode_dict <- setNames(c("9 dpi", "0 hpi", "48 hpi (inoculated)", "48 hpi (control)", 
+                           "48 hpi (sterilised)", "Unclassified"), c(paste0("barcode0", 1:5), "unclassified") )
+# Kraken2 report files
+kraken_files <- list.files("./data/kraken_taxonomy/", "kraken2_report.txt", full.names = TRUE)
+# read in report files
+for (f in kraken_files){
+  # f=kraken_files[2]
+  taxa_report <- read_tsv(f, col_names = c("Coverage_perc", "Rooted_reads", "Taxa_reads", 
+                                            "Rank", "NCBI_txid", "Scientific_name")) %>% 
+    mutate(Barcode=sub("_kraken2_report.txt", "", basename(f)), Sample=barcode_dict[Barcode])
+  phyla_data <- taxa_report %>% filter(Rank=="P", Rooted_reads>5) %>%
+    arrange(desc(Rooted_reads))
+  genus_data <- taxa_report %>% filter(Rank=="G", Rooted_reads>5) %>%
+    arrange(desc(Rooted_reads))
+  species_data <- taxa_report %>% filter(Rank=="S", Rooted_reads>5) %>%
+    arrange(desc(Rooted_reads))
+    # mutate(Scientific_name=fct_lump_min(Scientific_name, 4))
+}
 
+
+# 
+# 
+# all_taxa <- kraken_files %>% purrr::map_dfr(~read_tsv(.x, 
+#                           col_names = c("Coverage_perc", "Rooted_reads", "Taxa_reads", 
+#                                             "Rank", "NCBI_txid", "Scientific_name")) %>% 
+#                             mutate(barcode=sub("_kraken2_report.txt", "", basename(.x))))
+# plot_data <- all_taxa %>% filter(Rank=="P", Rooted_reads>5, 
+#                                  Scientific_name!="Streptophyta") %>%
+#   mutate(Scientific_name=fct_lump(Scientific_name, 8))
+# p <- ggplot(plot_data, 
+#             aes(x=barcode, y=Rooted_reads, fill=Scientific_name))
+# p + geom_bar(stat = 'identity', width=0.5) + scale_fill_d3() +
+#   # plot_theme(baseSize = 20) + 
+#   NULL
+# # top_species <- 
+#   taxa_report %>% filter(Rank=="P") %>% filter(Rooted_reads>5) %>% arrange(desc(Rooted_reads))
+  
+
+# count(NCBI_txid, Scientific_name) %>% arrange(desc(n))
+```
 
 ## General information
 This document was last updated at `r Sys.time()` using R Markdown (built with `r R.version.string`). Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. It is especially powerful at authoring documents and reports which include code and can execute code and use the results in the output. For more details on using R Markdown see <http://rmarkdown.rstudio.com> and [Rmarkdown cheatsheet](https://www.rstudio.com/wp-content/uploads/2016/03/rmarkdown-cheatsheet-2.0.pdf).
