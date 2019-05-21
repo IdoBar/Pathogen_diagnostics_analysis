@@ -1,0 +1,31 @@
+########################### Execution Started #############################
+JobId:5313502[1].pbsserver
+UserName:s2978925
+GroupName:s2978925
+ExecutionHost:n053
+WorkingDir:/var/spool/PBS/mom_priv
+###############################################################################
+module () {  eval `/usr/bin/modulecmd bash $*`
+}
+#!/bin/bash -v
+#PBS -V
+#PBS -l select=1:ncpus=16:mem=96GB,walltime=10:30:00
+
+cd $PBS_O_WORKDIR
+gawk -v ARRAY_IND=$PBS_ARRAY_INDEX 'NR==ARRAY_IND' ${CMDS_FILE} | bash
+Loading database information... done.
+63479 sequences (172.80 Mbp) processed in 18.683s (203.9 Kseq/m, 554.92 Mbp/m).
+  59361 sequences classified (93.51%)
+  4118 sequences unclassified (6.49%)
+########################### Job Execution History #############################
+JobId:5313502[1].pbsserver
+UserName:s2978925
+GroupName:s2978925
+JobName:kraken2_tax
+SessionId:5741
+ResourcesRequested:mem=96gb,ncpus=16,place=free,walltime=10:30:00
+ResourcesUsed:cpupercent=49,cput=00:12:38,mem=70983784kb,ncpus=16,vmem=74524488kb,walltime=00:46:08
+QueueUsed:workq
+AccountString:null
+ExitStatus:0
+###############################################################################

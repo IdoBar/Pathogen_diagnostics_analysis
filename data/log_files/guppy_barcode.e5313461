@@ -1,0 +1,19 @@
+########################### Execution Started #############################
+JobId:5313461.pbsserver
+UserName:s2978925
+GroupName:s2978925
+ExecutionHost:n044
+WorkingDir:/var/spool/PBS/mom_priv
+###############################################################################
+########################### Job Execution History #############################
+JobId:5313461.pbsserver
+UserName:s2978925
+GroupName:s2978925
+JobName:guppy_barcode
+SessionId:39285
+ResourcesRequested:mem=48gb,ncpus=16,place=free,walltime=20:00:00
+ResourcesUsed:cpupercent=691,cput=00:13:08,mem=15960kb,ncpus=16,vmem=3890440kb,walltime=00:02:13
+QueueUsed:workq
+AccountString:null
+ExitStatus:0
+###############################################################################
