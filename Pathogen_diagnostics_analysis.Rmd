@@ -87,11 +87,13 @@ Install needed software in a `conda` environment on Gowonda2.
 ```{bash setup_tools}
 # install and setup conda environment (maybe a new one for using the GPU node) (need to fix internet connection to gowonda2 - use patched netcheck in ~/bin)
 ~/bin/netcheck
-conda create --name tf_gpu -c bioconda tensorflow-gpu blast kraken2 deepbinner
-conda install -c bioconda blast kraken2 deepbinner
-conda install -c biobuilds igv
+conda install -c bioconda kraken2
 # Clean extra space
 conda clean -y --all
+# install deepbinner in a new conda environment
+conda create --name tf_gpu -c bioconda tensorflow-gpu deepbinner
+# install nanopore utils
+pip install ont-fast5-api
 # Install pdfx to parse the report and download the files, see https://stackoverflow.com/a/33173484
 easy_install -U pdfx
 ```
@@ -212,8 +214,6 @@ An alternative to demultiplexing with guppy is to use deepbinner [@Wick_Deepbinn
 ```{bash deepbinner}
 ### optional ###
 # demultiplex with Deepbinner
-conda install --override-channels -c anaconda tensorflow-gpu
-conda install --override-channels -c bioconda deepbinner
 pip install ont-fast5-api
 # Split the multi-read fast5 files to single-read
 NCORES=32
